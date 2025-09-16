@@ -2,7 +2,7 @@
 
 This project demonstrates a local end-to-end streaming pipeline using Docker Compose.
 
-![architecture](assets/architecture.png)
+![architecture](assets/architecture.svg)
 
 Services:
 - Zookeeper
