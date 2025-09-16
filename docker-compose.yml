@@ -8,7 +8,7 @@ services:
     ports:
       - 2181:2181
 
-  kafka:
+  broker:
     image: confluentinc/cp-enterprise-kafka:7.4.0
     container_name: broker
     depends_on:
@@ -99,13 +99,13 @@ services:
       - 8082:8080
     command: webserver
     depends_on:
-      - kafka
+      - broker
       - cassandra
 
   producer:
     build: ./producer
     depends_on:
-      - kafka
+      - broker
     volumes:
       - ./producer:/app
     command: python producer.py
