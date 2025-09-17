@@ -16,60 +16,81 @@ default_args = {
     'retry_delay': timedelta(minutes=1),
 }
 
-def streaming_job():
-    """Fetch a random user from the demo API and (placeholder) send to Kafka."""
+
+def get_data():
+    """Fetch a single user object from RandomUser API and return the raw user dict.
+
+    Returns None on error.
+    """
     try:
-        res = requests.get("https://randomuser.me/api/", timeout=5)
-        res.raise_for_status()
+        resp = requests.get("https://randomuser.me/api/", timeout=5)
+        resp.raise_for_status()
     except requests.RequestException as exc:
         print(f"API request failed: {exc}")
-        return
+        return None
 
-    data = res.json()
-
-    # Extract the first result (the API returns a list under 'results')
+    payload = resp.json()
     try:
-        user = data['results'][0]
-    except (KeyError, IndexError):
+        return payload['results'][0]
+    except (KeyError, IndexError, TypeError):
         print('Unexpected API response format:')
-        print(data)
+        print(payload)
+        return None
+
+
+def format_data(res):
+    """Normalize the RandomUser result into a flat dictionary for downstream use."""
+    if not isinstance(res, dict):
+        return None
+
+    loc = res.get('location', {}) or {}
+    street = loc.get('street', {}) or {}
+
+    data = {}
+    data['first_name'] = (res.get('name') or {}).get('first')
+    data['last_name'] = (res.get('name') or {}).get('last')
+    data['gender'] = res.get('gender')
+    # Address: number + street name, city, state, country
+    addr_parts = []
+    num = street.get('number')
+    name = street.get('name')
+    if num and name:
+        addr_parts.append(f"{num} {name}")
+    elif name:
+        addr_parts.append(name)
+    city = loc.get('city')
+    state = loc.get('state')
+    country = loc.get('country')
+    for p in (city, state, country):
+        if p:
+            addr_parts.append(p)
+    data['address'] = ', '.join(addr_parts) if addr_parts else None
+    data['postcode'] = loc.get('postcode')
+    data['email'] = res.get('email')
+    data['username'] = (res.get('login') or {}).get('username')
+    data['dob'] = (res.get('dob') or {}).get('date')
+    data['registered_date'] = (res.get('registered') or {}).get('date')
+    data['phone'] = res.get('phone')
+    data['picture'] = (res.get('picture') or {}).get('medium')
+
+    return data
+
+
+def stream_data():
+    """High-level function: fetch + format + print the formatted payload."""
+    raw = get_data()
+    if raw is None:
+        print('No data fetched.')
         return
 
-    # Friendly fields to display
-    name = user.get('name', {})
-    title = name.get('title', '')
-    first = name.get('first', '')
-    last = name.get('last', '')
-    full_name = ' '.join(p for p in [title, first, last] if p).strip()
+    formatted = format_data(raw)
+    if formatted is None:
+        print('Failed to format data.')
+        return
 
-    email = user.get('email')
-    phone = user.get('phone')
-    cell = user.get('cell')
-    location = user.get('location', {})
-    city = location.get('city')
-    state = location.get('state')
-    country = location.get('country')
-    picture = user.get('picture', {}).get('large')
-
-    print('--- RandomUser summary ---')
-    if full_name:
-        print('Name: ', full_name)
-    if email:
-        print('Email:', email)
-    if phone:
-        print('Phone:', phone)
-    if cell:
-        print('Cell: ', cell)
-    if city or state or country:
-        loc_parts = [p for p in [city, state, country] if p]
-        print('Location:', ', '.join(loc_parts))
-    if picture:
-        print('Picture:', picture)
-
-    # Also pretty-print the full user JSON for debugging (truncated if large)
+    # Pretty-print the normalized data
     import json as _json
-    print('\nFull user JSON:')
-    print(_json.dumps(user, indent=2)[:2000])
+    print(_json.dumps(formatted, indent=2))
 
 # The DAG and task creation are kept but only created when Airflow is available
 if AIRFLOW_AVAILABLE:
@@ -81,12 +102,12 @@ if AIRFLOW_AVAILABLE:
     ) as dag:
         streaming_task = PythonOperator(
             task_id='stream_data_from_api_to_kafka',
-            python_callable=streaming_job,
+            python_callable=stream_data,
         )
 
 
 if __name__ == '__main__':
     # quick local test: fetch and print API data
-    streaming_job()
+    stream_data()
 
 

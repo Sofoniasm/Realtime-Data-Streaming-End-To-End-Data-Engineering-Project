@@ -12,7 +12,7 @@ def delivery_report(err, msg):
     else:
         print(f"Message delivered to {msg.topic()} [{msg.partition()}]")
 
-p = Producer({'bootstrap.servers': 'kafka:9092'})
+p = Producer({'bootstrap.servers': 'broker:29092'})
 
 def gen_event():
     return {

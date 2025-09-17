@@ -2,8 +2,8 @@ import socket
 import time
 import subprocess
 
-HOST = 'kafka'
-PORT = 9092
+HOST = 'broker'
+PORT = 29092
 
 print('Waiting for Kafka to be available...')
 while True:
