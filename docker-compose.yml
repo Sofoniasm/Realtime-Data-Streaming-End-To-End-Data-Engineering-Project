@@ -1,3 +1,111 @@
+version: '3'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - '2181:2181'
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ['CMD', 'bash', '-c', "echo 'ruok' | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - confluent
+
+  broker:
+    image: confluentinc/cp-server:7.4.0
+    hostname: broker
+    container_name: broker
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - '9092:9092'
+      - '9101:9101'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:29092
+      CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      CONFLUENT_METRICS_ENABLE: 'false'
+      CONFLUENT_SUPPORT_CUSTOMER_ID: 'anonymous'
+    networks:
+      - confluent
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'nc -z localhost 9092']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      broker:
+        condition: service_healthy
+    ports:
+      - '8081:8081'
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - confluent
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8081']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:7.4.0
+    hostname: control-center
+    container_name: control-center
+    depends_on:
+      broker:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - '9021:9021'
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      CONFLIENT_METRICS_ENABLE: 'false'
+      PORT: 9021
+    networks:
+      - confluent
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9021']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  confluent:
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
@@ -15,9 +123,11 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092"
+      # Define both listener names (PLAINTEXT and PLAINTEXT_HOST) so they match
+      # the names used in KAFKA_ADVERTISED_LISTENERS above.
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     ports:
@@ -53,10 +163,22 @@ services:
       - cassandra_data:/var/lib/cassandra
       - ./cassandra/init_cassandra.cql:/init_cassandra.cql:ro
 
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      - cassandra
+    volumes:
+      - ./cassandra/init_cassandra.cql:/init_cassandra.cql:ro
+    entrypoint: ["/bin/bash", "-c", "until nc -z cassandra 9042; do sleep 1; done; cqlsh cassandra 9042 -f /init_cassandra.cql"]
+    restart: 'no'
+
   spark-master:
     build: ./spark
     environment:
       - SPARK_MODE=master
+      - HADOOP_USER_NAME=spark
+      - USER=spark
+  - JAVA_TOOL_OPTIONS=-Duser.name=spark -Duser.home=/tmp
     ports:
       - 7077:7077
       - 8080:8080
@@ -64,27 +186,52 @@ services:
       - ./spark/streaming_job.py:/opt/spark/app/streaming_job.py:ro
 
   spark-worker:
-    image: bitnami/spark:3.4.1
+    image: end-to-enddataengineer-spark-master:latest
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
+      - HADOOP_USER_NAME=spark
+      - USER=spark
+  - JAVA_TOOL_OPTIONS=-Duser.name=spark -Duser.home=/tmp
     depends_on:
       - spark-master
 
   airflow:
-    image: apache/airflow:2.8.1
+    build: ./airflow
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__FERNET_KEY: 'fernet-key'
-      AIRFLOW__CORE__SQL_ALCHEMY_CONN: sqlite:////root/airflow/airflow.db
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__FERNET_KEY: 'T8HAyJ15fIC-jk7bvCvgsaxP7RbmPcpRPMVTRAXr9LI='
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
     volumes:
       - ./airflow/dags:/opt/airflow/dags
+      - airflow_home:/opt/airflow
     ports:
       - 8082:8080
     command: webserver
     depends_on:
       - broker
       - cassandra
+
+  spark-job:
+    image: end-to-enddataengineer-spark-master:latest
+    depends_on:
+      - spark-master
+      - broker
+    environment:
+      - HOME=/tmp
+      - PYSPARK_PYTHON=/opt/bitnami/python/bin/python3
+      - PYSPARK_DRIVER_PYTHON=/opt/bitnami/python/bin/python3
+      - HADOOP_USER_NAME=spark
+      - USER=spark
+  - JAVA_TOOL_OPTIONS=-Duser.name=spark -Duser.home=/tmp
+      - SPARK_JARS_IVY=/tmp/.ivy2
+      - SPARK_CLASSPATH=/opt/bitnami/spark/jars/*
+    entrypoint:
+      - "/bin/bash"
+      - "-c"
+  - "mkdir -p /tmp/.ivy2 && chmod 0777 /tmp/.ivy2 && export SPARK_JARS_IVY=/tmp/.ivy2 && export SPARK_CLASSPATH=/opt/bitnami/spark/jars/* && /opt/bitnami/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --conf spark.sql.warehouse.dir=/tmp/spark-warehouse --conf spark.sql.catalogImplementation=in-memory /opt/spark/app/streaming_job.py"
+    volumes:
+      - ./spark/streaming_job.py:/opt/spark/app/streaming_job.py:ro
 
   producer:
     build: ./producer
@@ -96,3 +243,4 @@ services:
 
 volumes:
   cassandra_data:
+  airflow_home:
